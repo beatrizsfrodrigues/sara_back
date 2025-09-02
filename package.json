@@ -1,6 +1,14 @@
 {
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "dot-env": "^0.0.1",
-    "gitignore": "^0.7.0"
+    "body-parser": "^2.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "gitignore": "^0.7.0",
+    "googleapis": "^159.0.0"
   }
 }
