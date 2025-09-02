@@ -16,9 +16,7 @@ app.use(
 );
 app.use(bodyParser.json());
 
-const credentials = JSON.parse(
-  process.env.GOOGLE_CREDENTIALS.replace(/\\n/g, "\n")
-);
+const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
 const auth = new google.auth.GoogleAuth({
   credentials,
