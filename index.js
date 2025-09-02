@@ -12,9 +12,10 @@ app.use(bodyParser.json());
 
 // Google Drive API setup
 const auth = new google.auth.GoogleAuth({
-  keyFile: "credentials.json", // Downloaded from Google Cloud
+  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
   scopes: ["https://www.googleapis.com/auth/drive.readonly"],
 });
+
 const drive = google.drive({ version: "v3", auth });
 
 // Helper to convert stream to string
