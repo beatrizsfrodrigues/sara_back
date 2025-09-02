@@ -7,12 +7,22 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "https://sara-portfolio-eta.vercel.app", // <-- replace with your React app URL
+    methods: ["GET", "POST"],
+    credentials: true,
+  })
+);
 app.use(bodyParser.json());
+
+const credentials = JSON.parse(
+  process.env.GOOGLE_CREDENTIALS.replace(/\\n/g, "\n")
+);
 
 // Google Drive API setup
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+  credentials,
   scopes: ["https://www.googleapis.com/auth/drive.readonly"],
 });
 
