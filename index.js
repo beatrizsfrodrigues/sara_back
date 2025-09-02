@@ -16,7 +16,7 @@ app.use(
 );
 app.use(bodyParser.json());
 
-const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+const credentials = require("./credentials.json");
 
 const auth = new google.auth.GoogleAuth({
   credentials,
