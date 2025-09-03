@@ -3,13 +3,15 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const { google } = require("googleapis");
 require("dotenv").config();
+const sharp = require("sharp");
+const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
 app.use(
   cors({
-    origin: "https://sara-portfolio-eta.vercel.app", // <-- replace with your React app URL
+    origin: ["https://sara-portfolio-eta.vercel.app", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true,
   })
@@ -34,39 +36,83 @@ const streamToString = (stream) =>
     stream.on("error", reject);
   });
 
-// GET all folders inside a root folder
+const NodeCache = require("node-cache");
+const cache = new NodeCache({ stdTTL: 300 }); // cache results for 5 min
+
 app.get("/api/drive/folders/:rootId", async (req, res) => {
   try {
     const rootId = req.params.rootId;
+
+    // ✅ Serve from cache if exists
+    if (cache.has(rootId)) {
+      return res.json(cache.get(rootId));
+    }
+
+    // 1️⃣ List folders under root
     const response = await drive.files.list({
       q: `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name)",
     });
 
     const folders = response.data.files || [];
+    const result = [];
 
-    // Add first image thumbnail for each folder
-    const foldersWithImages = await Promise.all(
-      folders.map(async (folder) => {
-        const files = await drive.files.list({
-          q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed = false`,
-          fields: "files(id, name)",
+    for (const folder of folders) {
+      let coverImageId = null;
+      let firstImageId = null;
+
+      // 2️⃣ Look for "cover" subfolder
+      const subRes = await drive.files.list({
+        q: `'${folder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: "files(id, name)",
+      });
+
+      const coverFolder = subRes.data.files.find(
+        (f) => f.name.toLowerCase() === "cover"
+      );
+
+      // 3️⃣ If cover folder exists → get first image inside it
+      if (coverFolder) {
+        const coverRes = await drive.files.list({
+          q: `'${coverFolder.id}' in parents and mimeType contains 'image/' and trashed = false`,
+          fields: "files(id, name, createdTime)",
           orderBy: "createdTime",
           pageSize: 1,
         });
 
-        const firstImage = files.data.files[0];
-        return {
-          id: folder.id,
-          name: folder.name,
-          firstImageId: firstImage ? firstImage.id : null,
-        };
-      })
-    );
+        if (coverRes.data.files.length > 0) {
+          coverImageId = coverRes.data.files[0].id;
+        }
+      }
 
-    res.json(foldersWithImages);
+      // 4️⃣ If no cover image → fallback to first image inside the folder
+      if (!coverImageId) {
+        const folderImagesRes = await drive.files.list({
+          q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed = false`,
+          fields: "files(id, name, createdTime)",
+          orderBy: "createdTime",
+          pageSize: 1,
+        });
+
+        firstImageId = folderImagesRes.data.files[0]?.id || null;
+      }
+
+      console.log("Cover Image ID:", coverImageId);
+      console.log("First Image ID:", firstImageId);
+
+      result.push({
+        id: folder.id,
+        name: folder.name,
+        coverImageId, // cover image if exists
+        firstImageId, // fallback first image
+      });
+    }
+
+    // ✅ Cache & return
+    cache.set(rootId, result);
+    res.json(result);
   } catch (error) {
-    console.error(error);
+    console.error("❌ Failed to fetch folders:", error);
     res.status(500).json({ error: "Failed to fetch folders" });
   }
 });
@@ -108,31 +154,6 @@ app.get("/api/drive/password/content/:fileId", async (req, res) => {
   }
 });
 
-// GET thumbnail by fileId
-app.get("/api/thumbnail/:fileId", async (req, res) => {
-  const fileId = req.params.fileId;
-
-  try {
-    const fileMeta = await drive.files.get({
-      fileId,
-      fields: "id, name, mimeType",
-    });
-
-    const mimeType = fileMeta.data.mimeType;
-    res.setHeader("Content-Type", mimeType);
-
-    const file = await drive.files.get(
-      { fileId, alt: "media" },
-      { responseType: "stream" }
-    );
-
-    file.data.pipe(res);
-  } catch (err) {
-    console.error("Failed to fetch thumbnail:", err);
-    res.status(500).send("Failed to load image");
-  }
-});
-
 // Download file/folder
 app.get("/api/download/:id", async (req, res) => {
   const fileId = req.params.id;
@@ -168,12 +189,17 @@ app.get("/api/download/:id", async (req, res) => {
 app.get("/api/drive/images/:folderId", async (req, res) => {
   try {
     const folderId = req.params.folderId;
+    if (cache.has(folderId)) return res.json(cache.get(folderId));
+
     const response = await drive.files.list({
       q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
-      fields: "files(id, name, mimeType, thumbnailLink)", // <-- Add thumbnailLink here
+      fields: "files(id, name, mimeType, thumbnailLink)",
       orderBy: "createdTime",
     });
-    res.json(response.data.files || []);
+
+    const files = response.data.files || [];
+    cache.set(folderId, files); // ✅ cache album
+    res.json(files);
   } catch (error) {
     console.error("Failed to fetch images:", error);
     res.status(500).json({ error: "Failed to fetch images" });
@@ -221,14 +247,19 @@ app.post("/folder-images/:folderId", async (req, res) => {
 });
 
 app.get("/thumbnail/:fileId", async (req, res) => {
-  const { fileId } = req.params;
   try {
-    const file = await drive.files.get(
+    const fileId = req.params.fileId;
+
+    // Get direct image stream from Google Drive
+    const response = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" }
     );
+
+    // Pipe through Sharp to resize
+    const transformer = sharp().resize({ width: 600 }); // medium size
     res.setHeader("Content-Type", "image/jpeg");
-    file.data.pipe(res);
+    response.data.pipe(transformer).pipe(res);
   } catch (err) {
     console.error(err);
     res.status(500).send("Failed to load image");
