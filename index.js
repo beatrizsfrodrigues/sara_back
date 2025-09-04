@@ -149,35 +149,47 @@ app.get("/api/drive/password/content/:fileId", async (req, res) => {
   }
 });
 
-// Download file/folder
-app.get("/api/download/:id", async (req, res) => {
-  const fileId = req.params.id;
-
+// Get files in a folder
+app.get("/api/folder/:id/files", async (req, res) => {
   try {
+    const folderId = req.params.id;
+    const filesResponse = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
+      fields: "files(id, name)",
+    });
+    res.json({ files: filesResponse.data.files || [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch files in folder" });
+  }
+});
+
+// Download a single file
+app.get("/api/file/:id/download", async (req, res) => {
+  try {
+    const fileId = req.params.id;
     const meta = await drive.files.get({
       fileId,
-      fields: "id, mimeType, name",
+      fields: "id, name, mimeType",
     });
 
-    if (meta.data.mimeType === "application/vnd.google-apps.folder") {
-      // List files inside the folder (only images)
-      const filesResponse = await drive.files.list({
-        q: `'${fileId}' in parents and mimeType contains 'image/' and trashed=false`,
-        fields: "files(id, name)",
-      });
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(meta.data.name)}"`
+    );
+    res.setHeader(
+      "Content-Type",
+      meta.data.mimeType || "application/octet-stream"
+    );
 
-      res.json({ files: filesResponse.data.files || [] });
-    } else {
-      // Download a normal file
-      const file = await drive.files.get(
-        { fileId, alt: "media" },
-        { responseType: "stream" }
-      );
-      file.data.pipe(res);
-    }
-  } catch (error) {
-    console.error("Failed to download file/folder:", error.errors || error);
-    res.status(500).json({ error: "Failed to download file/folder" });
+    const file = await drive.files.get(
+      { fileId, alt: "media" },
+      { responseType: "stream" }
+    );
+    file.data.pipe(res);
+  } catch (err) {
+    console.error("Download error:", err);
+    res.status(500).json({ error: "Failed to download file" });
   }
 });
 
