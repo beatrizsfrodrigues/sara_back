@@ -285,5 +285,6 @@ app.listen(PORT, () => {
 });
 
 app.get("/health", (req, res) => {
+  console.log("Health check OK");
   res.send("OK");
 });
