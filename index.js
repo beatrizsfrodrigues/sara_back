@@ -190,7 +190,7 @@ app.get("/api/drive/images/:folderId", async (req, res) => {
       q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
       fields: "nextPageToken, files(id, name, mimeType, thumbnailLink)",
       orderBy: "createdTime",
-      pageSize: 50, // limit to 50 per request
+      pageSize: 20,
       pageToken,
     });
 
@@ -231,7 +231,7 @@ app.post("/folder-images/:folderId", async (req, res) => {
       q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
       fields:
         "nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink, webContentLink)",
-      pageSize: 50,
+      pageSize: 20,
       pageToken: pageToken || undefined,
     });
 
