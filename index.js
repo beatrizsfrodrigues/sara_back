@@ -246,40 +246,24 @@ app.post("/folder-images/:folderId", async (req, res) => {
 app.get("/thumbnail/:fileId", async (req, res) => {
   try {
     const fileId = req.params.fileId;
-    const size = req.query.size ? parseInt(req.query.size) : 600; // Get size from query, default to 600
-    const cacheKey = `thumbnail-${fileId}-${size}`;
-
-    // Check server-side cache
-    const cachedImage = cache.get(cacheKey);
-    if (cachedImage) {
-      res.setHeader("Content-Type", "image/webp");
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      return res.send(cachedImage);
-    }
+    const size = req.query.size ? parseInt(req.query.size) : 600; // default 600px
 
     const response = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" }
     );
 
-    const imageTransformer = sharp()
-      .resize({ width: size })
-      .webp({ quality: 80 });
+    res.setHeader("Content-Type", "image/webp");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
-    const chunks = [];
-    imageTransformer.on("data", (chunk) => chunks.push(chunk));
-    imageTransformer.on("end", () => {
-      const buffer = Buffer.concat(chunks);
-      cache.set(cacheKey, buffer);
-      res.setHeader("Content-Type", "image/webp");
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      res.send(buffer);
-    });
-
-    response.data.pipe(imageTransformer).on("error", (err) => {
-      console.error("Sharp processing error:", err);
-      res.status(500).send("Failed to process image");
-    });
+    // Stream Google Drive → sharp → client
+    response.data
+      .pipe(sharp().resize({ width: size }).webp({ quality: 80 }))
+      .pipe(res)
+      .on("error", (err) => {
+        console.error("Sharp processing error:", err);
+        res.status(500).send("Failed to process image");
+      });
   } catch (err) {
     console.error("Failed to load image:", err);
     res.status(500).send("Failed to load image");
@@ -295,4 +279,8 @@ app.get("/", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
+});
+
+app.get("/health", (req, res) => {
+  res.send("OK");
 });
