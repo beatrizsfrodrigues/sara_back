@@ -184,17 +184,21 @@ app.get("/api/download/:id", async (req, res) => {
 app.get("/api/drive/images/:folderId", async (req, res) => {
   try {
     const folderId = req.params.folderId;
-    if (cache.has(folderId)) return res.json(cache.get(folderId));
+    const pageToken = req.query.pageToken || undefined;
 
     const response = await drive.files.list({
       q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
-      fields: "files(id, name, mimeType, thumbnailLink)",
+      fields: "nextPageToken, files(id, name, mimeType, thumbnailLink)",
       orderBy: "createdTime",
+      pageSize: 50, // limit to 50 per request
+      pageToken,
     });
 
-    const files = response.data.files || [];
-    cache.set(folderId, files); // ✅ cache album
-    res.json(files);
+    // send nextPageToken along with files for client-side pagination
+    res.json({
+      files: response.data.files || [],
+      nextPageToken: response.data.nextPageToken || null,
+    });
   } catch (error) {
     console.error("Failed to fetch images:", error);
     res.status(500).json({ error: "Failed to fetch images" });
@@ -219,16 +223,16 @@ app.post("/download-folder/:id", async (req, res) => {
 app.post("/folder-images/:folderId", async (req, res) => {
   try {
     const folderId = req.params.folderId;
-    const { pageToken } = req.body; // ✅ read from body instead of query
+    const { pageToken } = req.body;
 
     console.log("📩 Received pageToken:", pageToken);
 
     const response = await drive.files.list({
-      q: `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
+      q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
       fields:
         "nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink, webContentLink)",
       pageSize: 50,
-      pageToken: pageToken || undefined, // ✅ safe pass
+      pageToken: pageToken || undefined,
     });
 
     res.json(response.data);
@@ -246,7 +250,7 @@ app.post("/folder-images/:folderId", async (req, res) => {
 app.get("/thumbnail/:fileId", async (req, res) => {
   try {
     const fileId = req.params.fileId;
-    const size = req.query.size ? parseInt(req.query.size) : 600; // default 600px
+    const size = req.query.size ? parseInt(req.query.size) : 600;
 
     const response = await drive.files.get(
       { fileId, alt: "media" },
@@ -256,7 +260,6 @@ app.get("/thumbnail/:fileId", async (req, res) => {
     res.setHeader("Content-Type", "image/webp");
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
-    // Stream Google Drive → sharp → client
     response.data
       .pipe(sharp().resize({ width: size }).webp({ quality: 80 }))
       .pipe(res)
