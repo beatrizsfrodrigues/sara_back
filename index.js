@@ -42,74 +42,69 @@ const cache = new NodeCache({ stdTTL: 300 }); // cache results for 5 min
 app.get("/api/drive/folders/:rootId", async (req, res) => {
   try {
     const rootId = req.params.rootId;
+    const cacheKey = `folders-${rootId}`; // Use a more specific cache key
 
-    // ✅ Serve from cache if exists
-    if (cache.has(rootId)) {
-      return res.json(cache.get(rootId));
+    if (cache.has(cacheKey)) {
+      console.log("✅ Serving albums from cache.");
+      return res.json(cache.get(cacheKey));
     }
 
-    // 1️⃣ List folders under root
+    // 1️⃣ Get the initial list of all album folders
     const response = await drive.files.list({
       q: `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name)",
     });
 
     const folders = response.data.files || [];
-    const result = [];
 
-    for (const folder of folders) {
-      let coverImageId = null;
-      let firstImageId = null;
+    // ⭐ 2️⃣ Process all folders in parallel instead of one-by-one
+    const result = await Promise.all(
+      folders.map(async (folder) => {
+        let coverImageId = null;
 
-      // 2️⃣ Look for "cover" subfolder
-      const subRes = await drive.files.list({
-        q: `'${folder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        fields: "files(id, name)",
-      });
-
-      const coverFolder = subRes.data.files.find(
-        (f) => f.name.toLowerCase() === "cover"
-      );
-
-      // 3️⃣ If cover folder exists → get first image inside it
-      if (coverFolder) {
-        const coverRes = await drive.files.list({
-          q: `'${coverFolder.id}' in parents and mimeType contains 'image/' and trashed = false`,
-          fields: "files(id, name, createdTime)",
-          orderBy: "createdTime",
+        // A. Look for "cover" subfolder
+        const subRes = await drive.files.list({
+          q: `'${folder.id}' in parents and name = 'cover' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          fields: "files(id, name)",
           pageSize: 1,
         });
+        const coverFolder = subRes.data.files[0];
 
-        if (coverRes.data.files.length > 0) {
-          coverImageId = coverRes.data.files[0].id;
+        // B. If cover folder exists, get the first image inside it
+        if (coverFolder) {
+          const coverRes = await drive.files.list({
+            q: `'${coverFolder.id}' in parents and mimeType contains 'image/' and trashed = false`,
+            fields: "files(id)",
+            orderBy: "createdTime",
+            pageSize: 1,
+          });
+          if (coverRes.data.files.length > 0) {
+            coverImageId = coverRes.data.files[0].id;
+          }
         }
-      }
 
-      // 4️⃣ If no cover image → fallback to first image inside the folder
-      if (!coverImageId) {
-        const folderImagesRes = await drive.files.list({
-          q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed = false`,
-          fields: "files(id, name, createdTime)",
-          orderBy: "createdTime",
-          pageSize: 1,
-        });
+        // C. If NO cover image was found, fallback to the first image in the main album folder
+        if (!coverImageId) {
+          const folderImagesRes = await drive.files.list({
+            q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed = false`,
+            fields: "files(id)",
+            orderBy: "createdTime",
+            pageSize: 1,
+          });
+          coverImageId = folderImagesRes.data.files[0]?.id || null;
+        }
 
-        firstImageId = folderImagesRes.data.files[0]?.id || null;
-      }
+        return {
+          id: folder.id,
+          name: folder.name,
+          // ⭐ We now reliably return one ID for the cover image
+          coverImageId: coverImageId,
+        };
+      })
+    );
 
-      console.log("Cover Image ID:", coverImageId);
-      console.log("First Image ID:", firstImageId);
-
-      result.push({
-        id: folder.id,
-        name: folder.name,
-        coverImageId, // cover image if exists
-        firstImageId, // fallback first image
-      });
-    }
-
-    // ✅ Cache & return
-    cache.set(rootId, result);
+    console.log("✅ Albums fetched and processed in parallel.");
+    cache.set(cacheKey, result);
     res.json(result);
   } catch (error) {
     console.error("❌ Failed to fetch folders:", error);
@@ -246,22 +241,47 @@ app.post("/folder-images/:folderId", async (req, res) => {
   }
 });
 
+// ⭐ UPDATED THUMBNAIL ROUTE WITH WEBp CONVERSION & CACHING ⭐
+// ⭐ UPDATED THUMBNAIL ROUTE WITH WEBp CONVERSION & DYNAMIC RESIZING ⭐
 app.get("/thumbnail/:fileId", async (req, res) => {
   try {
     const fileId = req.params.fileId;
+    const size = req.query.size ? parseInt(req.query.size) : 600; // Get size from query, default to 600
+    const cacheKey = `thumbnail-${fileId}-${size}`;
 
-    // Get direct image stream from Google Drive
+    // Check server-side cache
+    const cachedImage = cache.get(cacheKey);
+    if (cachedImage) {
+      res.setHeader("Content-Type", "image/webp");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      return res.send(cachedImage);
+    }
+
     const response = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" }
     );
 
-    // Pipe through Sharp to resize
-    const transformer = sharp().resize({ width: 600 }); // medium size
-    res.setHeader("Content-Type", "image/jpeg");
-    response.data.pipe(transformer).pipe(res);
+    const imageTransformer = sharp()
+      .resize({ width: size })
+      .webp({ quality: 80 });
+
+    const chunks = [];
+    imageTransformer.on("data", (chunk) => chunks.push(chunk));
+    imageTransformer.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      cache.set(cacheKey, buffer);
+      res.setHeader("Content-Type", "image/webp");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.send(buffer);
+    });
+
+    response.data.pipe(imageTransformer).on("error", (err) => {
+      console.error("Sharp processing error:", err);
+      res.status(500).send("Failed to process image");
+    });
   } catch (err) {
-    console.error(err);
+    console.error("Failed to load image:", err);
     res.status(500).send("Failed to load image");
   }
 });
