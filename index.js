@@ -141,8 +141,15 @@ app.get("/api/drive/password/content/:fileId", async (req, res) => {
       { responseType: "stream" }
     );
 
-    const password = await streamToString(response.data);
-    res.send(password.trim());
+    let password = await streamToString(response.data);
+
+    // Sanitize: remove invisible characters, normalize whitespace, trim
+    password = password
+      .replace(/[\u200B-\u200D\uFEFF]/g, "") // remove zero-width / BOM
+      .replace(/\r\n/g, "\n") // normalize line endings
+      .trim();
+
+    res.send(password);
   } catch (error) {
     console.error("Failed to fetch password content:", error);
     res.status(500).json({ error: "Failed to fetch password content" });
